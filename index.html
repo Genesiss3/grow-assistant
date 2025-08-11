@@ -55,12 +55,13 @@
   </header>
 
   <div id="root"></div>
+  <noscript>This app needs JavaScript enabled.</noscript>
 
   <footer>
     <small>Tip: Click “Sync now” to fetch your local forecast. Data is cached in your browser.</small>
   </footer>
 
-  <script type="text/babel">
+  <script type="text/babel" data-presets="env,react">
     const { useState, useEffect, useMemo } = React;
 
     // ---------- Utils & Storage ----------
@@ -68,8 +69,8 @@
     const addDays = (date, n) => { const d=new Date(date); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
     const fmtDate = d => new Date(d).toLocaleDateString();
     const fmtDateTime = d => new Date(d).toLocaleString();
-    const loadLS = (k, f) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch { return f; } };
-    const saveLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+    const loadLS = (k, f) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch (e) { return f; } };
+    const saveLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } };
     const defaultWeather = () => ({ days: Array.from({length:7}).map(()=>({lowF:55, highF:75, rh:60, rainChance:10})) });
 
     // ---------- Weather helpers ----------
@@ -257,7 +258,7 @@
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {[...grows].sort((a,b)=>(a.status==="archived")-(b.status==="archived")).map(g=>(
                   <div key={g.id} className={`grow-item ${g.id===activeGrowId?'active':''}`} style={{opacity:g.status==="archived"?0.6:1}}>
-                    <button style="text-align:left;flex:1;background:transparent;border:none;cursor:pointer" onClick={()=>setActiveGrowId(g.id)}>
+                    <button style={{textAlign:"left", flex:1, background:"transparent", border:"none", cursor:"pointer"}} onClick={()=>setActiveGrowId(g.id)}>
                       <div style={{fontWeight:600}}>{g.name}</div>
                       <div style={{fontSize:12,opacity:.7}}>{g.environment} • {g.style} • {fmtDate(g.startDate)}</div>
                     </button>
