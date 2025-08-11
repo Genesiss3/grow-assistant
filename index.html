@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Autoflower Grow Assistant — No‑AI (Static)</title>
+  <meta name="description" content="Autoflower Grow Assistant — static web app with journal, timeline, and live weather via Open‑Meteo.">
+  <style>
+    :root { --green:#2a6; }
+    body { margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; background:#fafafa; }
+    header, footer { background:#fff; border-bottom:1px solid #eaeaea; padding:12px 16px; }
+    footer { border-top:1px solid #eee; border-bottom:none; text-align:center; }
+    .content { display:grid; grid-template-columns:260px 1fr; gap:14px; padding:14px; }
+    .sidebar { background:#fff; border:1px solid #eee; border-radius:12px; padding:12px; height:fit-content; }
+    .sidebar-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .btn { cursor:pointer; border-radius:10px; padding:8px 12px; }
+    .btn.primary { background:var(--green); color:#fff; border:1px solid var(--green); }
+    .btn.ghost { background:#fff; color:var(--green); border:1px solid #cfeee0; }
+    .btn.small { padding:4px 8px; border:1px solid #ddd; background:#fff; border-radius:8px; font-size:12px; }
+    .grow-item { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px; border:1px solid #eee; border-radius:10px; background:#fff; }
+    .grow-item.active { outline:2px solid var(--green); background:#f1fff3; }
+    main { display:flex; flex-direction:column; gap:14px; }
+    .summary, .card, .empty { background:#fff; border:1px solid #eee; border-radius:12px; padding:14px; }
+    .grid { display:grid; grid-template-columns:1fr; gap:14px; }
+    .card h3 { margin:0 0 8px 0; }
+    .tabs { display:flex; gap:6px; background:#f5f7f7; border-radius:10px; padding:4px; }
+    .tab { background:transparent; border:none; padding:8px 10px; border-radius:8px; cursor:pointer; }
+    .tab.active { background:#fff; border:1px solid #eee; }
+    .input, textarea { border:1px solid #ddd; border-radius:8px; padding:8px 10px; outline:none; width:100%; }
+    textarea { resize:vertical; }
+    .form-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+    .form-grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .form-row { display:grid; grid-template-columns:1fr 140px; gap:10px; align-items:start; }
+    .entry { display:flex; justify-content:space-between; gap:10px; padding:10px; border:1px solid #f0f0f0; border-radius:10px; }
+    .weather-cell { border:1px solid #eee; border-radius:10px; padding:8px; background:#fcfffe; }
+    .alert { background:#fff8e6; border:1px solid #fde2a2; border-radius:10px; padding:10px; }
+    .labeled { display:flex; flex-direction:column; gap:6px; font-size:14px; }
+    .labeled small { opacity:.8; }
+    .row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px dashed #f0f0f0; }
+    svg { max-width:100%; height:auto; display:block; }
+    @media (max-width: 900px) { .content { grid-template-columns:1fr; } .form-grid, .form-grid-3 { grid-template-columns:1fr; } }
+  </style>
+  <!-- React + Babel for JSX on static hosting -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:12px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M4 13c0 4 3 7 7 7 6 0 9-6 9-12V6h-2C10 6 4 8 4 13Z" stroke="#2a6" stroke-width="2" fill="#dff6e8"></path><path d="M8 17c1-3 5-6 8-7" stroke="#2a6" stroke-width="2"></path></svg>
+      <h1 style="margin:0;font-size:20px">Autoflower Grow Assistant — No‑AI (Static)</h1>
+    </div>
+    <div style="opacity:.7;font-size:12px">Static web app • Offline‑first • Live weather via Open‑Meteo</div>
+  </header>
+
+  <div id="root"></div>
+
+  <footer>
+    <small>Tip: Click “Sync now” to fetch your local forecast. Data is cached in your browser.</small>
+  </footer>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // ---------- Utils & Storage ----------
+    const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const addDays = (date, n) => { const d=new Date(date); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+    const fmtDate = d => new Date(d).toLocaleDateString();
+    const fmtDateTime = d => new Date(d).toLocaleString();
+    const loadLS = (k, f) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch { return f; } };
+    const saveLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+    const defaultWeather = () => ({ days: Array.from({length:7}).map(()=>({lowF:55, highF:75, rh:60, rainChance:10})) });
+
+    // ---------- Weather helpers ----------
+    function buildOMUrl(lat, lon) {
+      const params = new URLSearchParams({
+        latitude: String(lat),
+        longitude: String(lon),
+        daily: ["temperature_2m_max","temperature_2m_min","sunrise","sunset","precipitation_probability_max"].join(","),
+        hourly: ["temperature_2m","relative_humidity_2m","precipitation_probability","rain","dew_point_2m"].join(","),
+        timezone: "auto",
+        temperature_unit: "fahrenheit",
+      });
+      return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+    }
+    function transformOMToDays(data) {
+      const days = [];
+      const { daily, hourly } = data;
+      if (!daily) return defaultWeather().days;
+      const rhByDate = {};
+      if (hourly && hourly.time && hourly.relative_humidity_2m) {
+        hourly.time.forEach((iso, i) => {
+          const d = iso.slice(0,10);
+          if (!rhByDate[d]) rhByDate[d] = [];
+          rhByDate[d].push(hourly.relative_humidity_2m[i]);
+        });
+      }
+      const len = Math.min(7, daily.time.length);
+      for (let i=0;i<len;i++) {
+        const dateStr = daily.time[i];
+        const highF = daily.temperature_2m_max?.[i];
+        const lowF = daily.temperature_2m_min?.[i];
+        const rainProb = (daily.precipitation_probability_max?.[i] ?? 0);
+        const rhArr = rhByDate[dateStr] || [];
+        const rh = rhArr.length ? Math.round(rhArr.reduce((a,b)=>a+b,0)/rhArr.length) : 60;
+        days.push({ lowF, highF, rh, rainChance: rainProb });
+      }
+      return days;
+    }
+    function transformOMToHourly(data) {
+      const h = data.hourly || {};
+      return {
+        time: h.time || [],
+        tempF: h.temperature_2m || [],
+        rh: h.relative_humidity_2m || [],
+        rainProb: h.precipitation_probability || [],
+        rain: h.rain || [],
+        dew: h.dew_point_2m || [],
+      };
+    }
+    function sliceHourlyForDay(hourly, dayIndex) {
+      if (!hourly || !hourly.time || hourly.time.length === 0) return null;
+      const d0 = hourly.time.find(t => t.includes("T00:00"))?.slice(0,10) || hourly.time[0].slice(0,10);
+      const base = new Date(d0);
+      const target = new Date(base.getTime() + dayIndex*24*60*60*1000);
+      const key = target.toISOString().slice(0,10);
+      const idxs = hourly.time.map((t,i)=>[t,i]).filter(([t])=>t.startsWith(key)).map(([,i])=>i);
+      const hours = idxs.map(i => hourly.time[i].slice(11,16));
+      return { hours, tempF: idxs.map(i => hourly.tempF[i]), rainProb: idxs.map(i => hourly.rainProb[i]) };
+    }
+
+    // ---------- Knowledge pack & rules ----------
+    function autoflowerOutdoorKnowledgePack(startDate) {
+      const W = (w, title, steps=[]) => ({
+        id: `w${w}-${title.toLowerCase().replace(/[^a-z0-9]+/g,"-")}`,
+        week: w, title, steps,
+        dueAt: addDays(startDate, (w-1)*7 + 3),
+        state: "pending",
+      });
+      return [
+        W(1,"Germinate & establish seedling",["Start in Rapid Rooter; 75–80°F","Lightly moist; gentle airflow","Transplant when roots show or day 10"]),
+        W(2,"Transplant to final pot (3–5 gal)",["Plant plug gently","Begin light nutrients (¼–½ strength)"]),
+        W(3,"Early veg care",["Check pests; one preventative spray (no buds)","Stake if windy; 6–8h direct sun"]),
+        W(4,"Pre‑flower checks",["Topdress/adjust feed; watch stretch","Light defol only if airflow blocked"]),
+        W(5,"Early flower support",["Support branches; avoid wet buds","Begin bloom nutrients gradually"]),
+        W(6,"Flower maintenance",["Inspect daily for mold/caterpillars","Water to light runoff; avoid overwatering"]),
+        W(7,"Rain & humidity vigilance",["Prepare rain shield","Increase airflow around colas"]),
+        W(8,"Late flower care",["Reduce N; maintain P/K","Check trichomes (cloudy→amber)"]),
+        W(9,"Ripening & flush (optional)",["If flushing, start 7–10 days before harvest","Minimal handling of wet buds"]),
+        W(10,"Harvest & dry setup",["Harvest at cloudy/some amber","Dry 60–70°F, 50–60% RH; gentle airflow"]),
+      ];
+    }
+    function generateAutoflowerOutdoorTimeline(grow) {
+      const start = new Date(grow.startDate);
+      const plan = autoflowerOutdoorKnowledgePack(start);
+      const saved = grow.tasks || [];
+      return plan.map(p => {
+        const prior = saved.find(s => s.id === p.id);
+        return prior ? { ...p, state: prior.state } : p;
+      });
+    }
+    function evaluateWeatherRules(grow, simWeather, timeline) {
+      const alerts = [];
+      const next3 = simWeather.days.slice(0,3);
+      const avg = arr => Math.round(arr.reduce((a,b)=>a+b,0)/(arr.length||1));
+      const avgRH = avg(next3.map(d=>d.rh));
+      const maxRain = Math.max(...next3.map(d=>d.rainChance));
+      const minLow = Math.min(...next3.map(d=>d.lowF));
+      const maxHigh = Math.max(...next3.map(d=>d.highF));
+      const daysSince = Math.floor((new Date() - new Date(grow.startDate))/(1000*60*60*24));
+      const stage = daysSince < 21 ? "veg" : daysSince < 49 ? "flower_early" : "flower_late";
+      if ((stage === "flower_early" || stage === "flower_late") && (avgRH >= 85 || maxRain >= 70)) {
+        alerts.push({ id: uid(), severity: "high", title: "High humidity / rain incoming", message: "Deploy rain shield, keep buds dry, vent mid‑day." });
+      }
+      if (minLow <= 40) alerts.push({ id: uid(), severity: "high", title: "Possible frost risk", message: "Cover at night or move pots inside; remove cover after sunrise." });
+      else if (minLow <= 48) alerts.push({ id: uid(), severity: "medium", title: "Chilly nights ahead", message: "Consider evening cover; water earlier to reduce night RH." });
+      if (maxHigh >= 92) alerts.push({ id: uid(), severity: "medium", title: "Heat stress risk", message: "Provide midday shade; ensure soil doesn’t bone-dry." });
+      return alerts;
+    }
+
+    // ---------- Small UI primitives ----------
+    const Labeled = ({label, children, small}) => (
+      <label className="labeled" style={{fontSize: small?12:14}}>
+        <small>{label}</small>
+        {children}
+      </label>
+    );
+    const Card = ({title, children}) => (
+      <section className="card">
+        <h3>{title}</h3>
+        <div>{children}</div>
+      </section>
+    );
+    const Row = ({label, children}) => (
+      <div className="row"><div style={{opacity:.7}}>{label}</div><div>{children}</div></div>
+    );
+
+    // ---------- Charts (SVG) ----------
+    const TempLineChart = ({hours, values}) => {
+      const w=560,h=160,pad=28;
+      if (!values || values.length===0) return null;
+      const min=Math.min(...values), max=Math.max(...values);
+      const xi=i=> pad + (i/(values.length-1))*(w-2*pad);
+      const yi=v=> h - pad - ((v-min)/(max-min||1))*(h-2*pad);
+      const d=values.map((v,i)=>`${i===0?'M':'L'}${xi(i)},${yi(v)}`).join(' ');
+      return (<svg viewBox={`0 0 ${w} ${h}`}>
+        <rect x="0" y="0" width={w} height={h} fill="#fafafa" stroke="#eee"/>
+        <path d={d} fill="none" stroke="#2a6" strokeWidth="2"/>
+        {values.map((v,i)=>(<circle key={i} cx={xi(i)} cy={yi(v)} r="2" fill="#2a6"/>))}
+        <text x={pad} y={h-6} fontSize="10" fill="#666">{hours?.[0]}</text>
+        <text x={w-pad-20} y={h-6} fontSize="10" fill="#666">{hours?.[hours.length-1]}</text>
+      </svg>);
+    };
+    const RainBarChart = ({hours, values}) => {
+      const w=560,h=160,pad=28;
+      if (!values || values.length===0) return null;
+      const max=Math.max(100,...values);
+      const barW=(w-2*pad)/values.length;
+      return (<svg viewBox={`0 0 ${w} ${h}`}>
+        <rect x="0" y="0" width={w} height={h} fill="#fafafa" stroke="#eee"/>
+        {values.map((v,i)=>{
+          const x=pad+i*barW; const bh=((v)/(max||1))*(h-2*pad);
+          return <rect key={i} x={x} y={h-pad-bh} width={Math.max(1,barW-1)} height={bh} fill="#4aa3df"/>;
+        })}
+        <text x={pad} y={h-6} fontSize="10" fill="#666">{hours?.[0]}</text>
+        <text x={w-pad-20} y={h-6} fontSize="10" fill="#666">{hours?.[hours.length-1]}</text>
+      </svg>);
+    };
+
+    // ---------- App ----------
+    function App() {
+      const [grows, setGrows] = useState(loadLS("grows", []));
+      const [activeGrowId, setActiveGrowId] = useState(loadLS("activeGrowId", null));
+      const [journal, setJournal] = useState(loadLS("journal", {}));
+      const [simWeather, setSimWeather] = useState(loadLS("simWeather", defaultWeather()));
+      const [showOnboarding, setShowOnboarding] = useState(grows.length===0);
+
+      useEffect(()=>saveLS("grows",grows),[grows]);
+      useEffect(()=>saveLS("activeGrowId",activeGrowId),[activeGrowId]);
+      useEffect(()=>saveLS("journal",journal),[journal]);
+      useEffect(()=>saveLS("simWeather",simWeather),[simWeather]);
+
+      const activeGrow = useMemo(()=>grows.find(g=>g.id===activeGrowId)||null,[grows,activeGrowId]);
+      const timeline = useMemo(()=> activeGrow? generateAutoflowerOutdoorTimeline(activeGrow):[],[activeGrow]);
+      const alerts = useMemo(()=> activeGrow? evaluateWeatherRules(activeGrow, simWeather, timeline):[],[activeGrow, simWeather, timeline]);
+      const entries = journal[activeGrowId||""] || [];
+
+      return (
+        <>
+          <div className="content">
+            <aside className="sidebar">
+              <div className="sidebar-header">
+                <div style={{fontWeight:700}}>Your Grows</div>
+                <button className="btn primary" onClick={()=>setShowOnboarding(true)}>+ New</button>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {[...grows].sort((a,b)=>(a.status==="archived")-(b.status==="archived")).map(g=>(
+                  <div key={g.id} className={`grow-item ${g.id===activeGrowId?'active':''}`} style={{opacity:g.status==="archived"?0.6:1}}>
+                    <button style="text-align:left;flex:1;background:transparent;border:none;cursor:pointer" onClick={()=>setActiveGrowId(g.id)}>
+                      <div style={{fontWeight:600}}>{g.name}</div>
+                      <div style={{fontSize:12,opacity:.7}}>{g.environment} • {g.style} • {fmtDate(g.startDate)}</div>
+                    </button>
+                    <button className="btn small" onClick={()=>setGrows(cur=>cur.map(x=>x.id===g.id?{...x,status:x.status==="archived"?"active":"archived"}:x))}>{g.status==="archived"?"Unarchive":"Archive"}</button>
+                  </div>
+                ))}
+                {grows.length===0 && <div style={{opacity:.7}}>No grows yet.</div>}
+              </div>
+            </aside>
+
+            <main>
+              {showOnboarding ? (
+                <Onboarding onCancel={()=>setShowOnboarding(false)} onCreate={(g)=>{ setGrows(cur=>[g,...cur]); setActiveGrowId(g.id); setShowOnboarding(false); }}/>
+              ) : !activeGrow ? (
+                <div className="empty" style={{textAlign:"center"}}>
+                  <h2 style={{marginTop:0}}>Let’s start your first grow</h2>
+                  <p>We’ll create a 10‑week schedule, a journal, and live weather alerts.</p>
+                  <button className="btn primary" onClick={()=>setShowOnboarding(true)}>Create a Grow</button>
+                </div>
+              ) : (
+                <>
+                  <GrowSummary grow={activeGrow} onUpdate={(patch)=>{ setGrows(cur=>cur.map(g=>g.id===patch.id?{...g,...patch}:g)); }}/>
+
+                  <div className="grid">
+                    <Card title="Timeline (10‑week plan)">
+                      <TimelineView grow={activeGrow} timeline={timeline} onToggleTask={(taskId)=>{
+                        setGrows(cur=>cur.map(g=>{
+                          if (g.id!==activeGrow.id) return g;
+                          const tasks=(g.tasks||timeline).map(t=> t.id===taskId ? {...t, state: t.state==="done"?"pending":"done"} : t);
+                          return {...g, tasks};
+                        }));
+                      }}/>
+                    </Card>
+
+                    <Card title="Journal">
+                      <Journal entries={entries} onAdd={(e)=>{
+                        setJournal(cur=>({ ...cur, [activeGrow.id]: [e, ...(cur[activeGrow.id]||[])] }));
+                      }} onDelete={(id)=>{
+                        setJournal(cur=>({ ...cur, [activeGrow.id]: (cur[activeGrow.id]||[]).filter(x=>x.id!==id) }));
+                      }}/>
+                    </Card>
+
+                    <Card title="Weather Forecast & Alerts">
+                      <WeatherLive grow={activeGrow} sim={simWeather} setSim={setSimWeather}/>
+                      <AlertList alerts={alerts}/>
+                    </Card>
+
+                    <Card title="Data Export / Import">
+                      <DataIO grows={grows} journal={journal} simWeather={simWeather} onImport={(bundle)=>{
+                        if (bundle.grows) setGrows(bundle.grows);
+                        if (bundle.journal) setJournal(bundle.journal);
+                        if (bundle.simWeather) setSimWeather(bundle.simWeather);
+                        if (bundle.grows?.[0]?.id) setActiveGrowId(bundle.grows[0].id);
+                      }}/>
+                    </Card>
+                  </div>
+                </>
+              )}
+            </main>
+          </div>
+        </>
+      );
+    }
+
+    // ---------- Subcomponents ----------
+    function Onboarding({ onCreate, onCancel }) {
+      const [form, setForm] = useState({
+        name: "Autoflower Outdoor",
+        style: "autoflower",
+        environment: "outdoor",
+        location: "Virginia, USA",
+        latitude: 38.7842,
+        longitude: -77.5029,
+        startDate: new Date().toISOString().slice(0,10),
+        medium: "blend",
+        potSizeGallons: 5,
+      });
+      return (
+        <div className="card" style={{maxWidth:820}}>
+          <h2 style={{marginTop:0}}>New Grow</h2>
+          <div className="form-grid">
+            <Labeled label="Name"><input className="input" value={form.name} onChange={e=>setForm({...form, name:e.target.value})}/></Labeled>
+            <Labeled label="Style">
+              <select className="input" value={form.style} onChange={e=>setForm({...form, style:e.target.value})}>
+                <option value="autoflower">Autoflower</option>
+                <option value="photoperiod">Photoperiod</option>
+              </select>
+            </Labeled>
+            <Labeled label="Environment">
+              <select className="input" value={form.environment} onChange={e=>setForm({...form, environment:e.target.value})}>
+                <option value="outdoor">Outdoor</option>
+                <option value="indoor">Indoor</option>
+                <option value="greenhouse">Greenhouse</option>
+              </select>
+            </Labeled>
+            <Labeled label="Location (free‑text)"><input className="input" value={form.location} onChange={e=>setForm({...form, location:e.target.value})}/></Labeled>
+            <Labeled label="Latitude"><input type="number" step="0.0001" className="input" value={form.latitude} onChange={e=>setForm({...form, latitude:+e.target.value})}/></Labeled>
+            <Labeled label="Longitude"><input type="number" step="0.0001" className="input" value={form.longitude} onChange={e=>setForm({...form, longitude:+e.target.value})}/></Labeled>
+            <Labeled label="Start Date"><input type="date" className="input" value={form.startDate} onChange={e=>setForm({...form, startDate:e.target.value})}/></Labeled>
+            <Labeled label="Medium">
+              <select className="input" value={form.medium} onChange={e=>setForm({...form, medium:e.target.value})}>
+                <option value="soil">Soil</option>
+                <option value="coco">Coco</option>
+                <option value="blend">Soil/Coco Blend</option>
+              </select>
+            </Labeled>
+            <Labeled label="Pot Size (gal)"><input type="number" min="1" className="input" value={form.potSizeGallons} onChange={e=>setForm({...form, potSizeGallons:+e.target.value})}/></Labeled>
+          </div>
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button className="btn primary" onClick={()=>onCreate({...form, id: uid(), status:"active"})}>Create</button>
+            <button className="btn ghost" onClick={onCancel}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+
+    function GrowSummary({ grow, onUpdate }) {
+      const weeks=10;
+      const endDate = addDays(new Date(grow.startDate), weeks*7);
+      const [editing, setEditing] = useState(false);
+      const [draft, setDraft] = useState(grow);
+      useEffect(()=>setDraft(grow),[grow]);
+      return (
+        <div className="summary" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          {!editing ? (<>
+            <div>
+              <h2 style={{margin:0}}>{grow.name}</h2>
+              <div style={{opacity:.8}}>{grow.environment} • {grow.style} • {grow.medium} • {grow.potSizeGallons} gal</div>
+              {(grow.latitude!==undefined && grow.longitude!==undefined) && (
+                <div style={{fontSize:12, opacity:.7}}>Lat {Number(grow.latitude).toFixed(4)}, Lon {Number(grow.longitude).toFixed(4)}</div>
+              )}
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div><b>Start:</b> {fmtDate(grow.startDate)}</div>
+              <div><b>Target harvest:</b> {fmtDate(endDate)}</div>
+              <div><button className="btn small" style={{marginTop:6}} onClick={()=>setEditing(true)}>Edit details</button></div>
+            </div>
+          </>) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,width:"100%"}}>
+              <Labeled label="Name"><input className="input" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></Labeled>
+              <Labeled label="Location (free‑text)"><input className="input" value={draft.location||""} onChange={e=>setDraft({...draft,location:e.target.value})}/></Labeled>
+              <Labeled label="Start Date"><input type="date" className="input" value={draft.startDate} onChange={e=>setDraft({...draft,startDate:e.target.value})}/></Labeled>
+              <Labeled label="Latitude"><input type="number" step="0.0001" className="input" value={draft.latitude??38.7842} onChange={e=>setDraft({...draft,latitude:+e.target.value})}/></Labeled>
+              <Labeled label="Longitude"><input type="number" step="0.0001" className="input" value={draft.longitude??-77.5029} onChange={e=>setDraft({...draft,longitude:+e.target.value})}/></Labeled>
+              <Labeled label="Pot Size (gal)"><input type="number" min="1" className="input" value={draft.potSizeGallons} onChange={e=>setDraft({...draft,potSizeGallons:+e.target.value})}/></Labeled>
+              <div style={{gridColumn:"1 / -1", display:"flex", gap:8, justifyContent:"flex-end"}}>
+                <button className="btn ghost" onClick={()=>{setEditing(false); setDraft(grow);}}>Cancel</button>
+                <button className="btn primary" onClick={()=>{ onUpdate({...draft, id: grow.id}); setEditing(false); }}>Save</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function TimelineView({ grow, timeline, onToggleTask }) {
+      const today = new Date();
+      return (<div>
+        <div style={{display:"grid",gridTemplateColumns:"80px 1fr 80px",gap:8,fontWeight:600,padding:"6px 8px",borderBottom:"1px solid #ececec"}}>
+          <div>Week</div><div>Task</div><div>Due</div>
+        </div>
+        {timeline.map(t=>(
+          <div key={t.id} style={{display:"grid",gridTemplateColumns:"80px 1fr 80px",gap:8,alignItems:"center",padding:"10px 8px",borderBottom:"1px solid #f2f2f2",background:t.state==="done"?"#f1fff3":undefined}}>
+            <div style={{opacity:.8}}>W{t.week}</div>
+            <div>
+              <div style={{fontWeight:600}}>{t.title}</div>
+              {t.steps?.length>0 && <ul style={{margin:"6px 0 0 16px"}}>{t.steps.map((s,i)=><li key={i} style={{fontSize:13,opacity:.85}}>{s}</li>)}</ul>}
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:12,opacity:.7}}>{fmtDate(t.dueAt)}</div>
+              <button className="btn small" onClick={()=>onToggleTask(t.id)}>{t.state==="done"?"Undo":"Done"}</button>
+              {(new Date(t.dueAt) < new Date(today.toDateString())) && t.state!=="done" && <div style={{color:"#b30000",fontSize:12}}>Past due</div>}
+            </div>
+          </div>
+        ))}
+      </div>);
+    }
+
+    function Journal({ entries, onAdd, onDelete }) {
+      const [tab, setTab] = useState("note");
+      const [form, setForm] = useState({ text:"", volumeL:"", ph:"", ec:"", photoUrl:"", runoffPh:"" });
+      const num = v => { const n=parseFloat(v); return isNaN(n)?undefined:n; };
+      function add(type){
+        const base={ id: uid(), ts: new Date().toISOString(), type };
+        if (type==="note") onAdd({...base, text: (form.text||"").trim()});
+        if (type==="feeding") onAdd({...base, volumeL:num(form.volumeL), ph:num(form.ph), ec:num(form.ec), strength:"0.5–1x"});
+        if (type==="measurement") onAdd({...base, ph:num(form.ph), ec:num(form.ec), runoffPh:num(form.runoffPh)});
+        if (type==="photo") onAdd({...base, url:(form.photoUrl||"").trim()});
+        setForm({ text:"", volumeL:"", ph:"", ec:"", photoUrl:"", runoffPh:"" });
+      }
+      return (<div>
+        <div className="tabs">
+          {["note","feeding","measurement","photo"].map(id=>{
+            const labels={note:"Note",feeding:"Feeding",measurement:"Measurement",photo:"Photo (URL)"};
+            return <button key={id} className={`tab ${tab===id?'active':''}`} onClick={()=>setTab(id)}>{labels[id]}</button>;
+          })}
+        </div>
+        <div style={{marginTop:10}}>
+          {tab==="note" && (
+            <div className="form-row">
+              <textarea rows="3" className="input" placeholder="What happened today?" value={form.text} onChange={e=>setForm({...form,text:e.target.value})}/>
+              <div><button className="btn primary" onClick={()=>add("note")} disabled={!form.text.trim()}>Add Note</button></div>
+            </div>
+          )}
+          {tab==="feeding" && (
+            <div className="form-grid-3">
+              <Labeled label="Volume (L)"><input className="input" value={form.volumeL} onChange={e=>setForm({...form,volumeL:e.target.value})}/></Labeled>
+              <Labeled label="pH"><input className="input" value={form.ph} onChange={e=>setForm({...form,ph:e.target.value})}/></Labeled>
+              <Labeled label="EC"><input className="input" value={form.ec} onChange={e=>setForm({...form,ec:e.target.value})}/></Labeled>
+              <div style={{gridColumn:"1 / -1"}}><button className="btn primary" onClick={()=>add("feeding")} disabled={!form.volumeL}>Log Feeding</button></div>
+            </div>
+          )}
+          {tab==="measurement" && (
+            <div className="form-grid-3">
+              <Labeled label="pH"><input className="input" value={form.ph} onChange={e=>setForm({...form,ph:e.target.value})}/></Labeled>
+              <Labeled label="EC"><input className="input" value={form.ec} onChange={e=>setForm({...form,ec:e.target.value})}/></Labeled>
+              <Labeled label="Runoff pH"><input className="input" value={form.runoffPh} onChange={e=>setForm({...form,runoffPh:e.target.value})}/></Labeled>
+              <div style={{gridColumn:"1 / -1"}}><button className="btn primary" onClick={()=>add("measurement")} disabled={!form.ph && !form.ec && !form.runoffPh}>Log Measurement</button></div>
+            </div>
+          )}
+          {tab==="photo" && (
+            <div className="form-grid">
+              <Labeled label="Image URL"><input className="input" value={form.photoUrl} onChange={e=>setForm({...form,photoUrl:e.target.value})} placeholder="https://..."/></Labeled>
+              <div><button className="btn primary" onClick={()=>add("photo")} disabled={!form.photoUrl.trim()}>Add Photo</button></div>
+            </div>
+          )}
+        </div>
+        <div style={{marginTop:16,borderTop:"1px solid #eee",paddingTop:10}}>
+          {entries.length===0 ? <div style={{opacity:.7}}>No entries yet.</div> : (
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {entries.map(e=>(
+                <div key={e.id} className="entry">
+                  <div>
+                    <div style={{fontSize:12,opacity:.7}}>{fmtDateTime(e.ts)} • {e.type}</div>
+                    {e.type==="note" && <div>{e.text}</div>}
+                    {e.type==="feeding" && <div>Fed {e.volumeL} L @ pH {e.ph??"–"} EC {e.ec??"–"} ({e.strength})</div>}
+                    {e.type==="measurement" && <div>pH {e.ph??"–"}, EC {e.ec??"–"}, Runoff pH {e.runoffPh??"–"}</div>}
+                    {e.type==="photo" && e.url && <div style={{marginTop:6}}><img src={e.url} alt="grow" style={{maxWidth:"100%",borderRadius:"8px",border:"1px solid #eee"}}/></div>}
+                  </div>
+                  <button className="btn ghost" onClick={()=>onDelete(e.id)}>Delete</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>);
+    }
+
+    function WeatherSim({ sim, setSim }) {
+      const days = sim.days;
+      const updateDay=(idx,patch)=>{
+        const next={...sim, days: sim.days.map((d,i)=> i===idx?{...d,...patch}:d)};
+        setSim(next);
+      };
+      return (<div>
+        <p style={{marginTop:0,opacity:.8}}>Enter a simple 7‑day forecast. Live API can overwrite this when you Sync.</p>
+        <div style={{display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:8}}>
+          {days.map((d,idx)=>(
+            <div key={idx} className="weather-cell">
+              <div style={{fontWeight:700}}>D{idx+1}</div>
+              <Labeled label="Low (°F)" small><input className="input" value={d.lowF} onChange={e=>updateDay(idx,{lowF:+e.target.value})}/></Labeled>
+              <Labeled label="High (°F)" small><input className="input" value={d.highF} onChange={e=>updateDay(idx,{highF:+e.target.value})}/></Labeled>
+              <Labeled label="RH %" small><input className="input" value={d.rh} onChange={e=>updateDay(idx,{rh:+e.target.value})}/></Labeled>
+              <Labeled label="Rain %" small><input className="input" value={d.rainChance} onChange={e=>updateDay(idx,{rainChance:+e.target.value})}/></Labeled>
+            </div>
+          ))}
+        </div>
+      </div>);
+    }
+
+    function WeatherLive({ grow, sim, setSim }) {
+      const [status, setStatus] = useState({ syncing:false, error:null, last: loadLS(`om_last_${grow.id}`, null) });
+      const [selectedDay, setSelectedDay] = useState(0);
+      const [hourly, setHourly] = useState(null);
+
+      async function syncNow(){
+        if (status.syncing) return;
+        setStatus({ syncing:true, error:null, last: status.last });
+        try {
+          const url = buildOMUrl(grow.latitude ?? 38.7842, grow.longitude ?? -77.5029);
+          const res = await fetch(url);
+          if (!res.ok) throw new Error("Weather fetch failed");
+          const data = await res.json();
+          const days = transformOMToDays(data);
+          const hourlyData = transformOMToHourly(data);
+          setSim({ days });
+          setHourly(hourlyData);
+          const now = new Date().toISOString();
+          saveLS(`om_last_${grow.id}`, now);
+          setStatus({ syncing:false, error:null, last: now });
+        } catch(e) {
+          setStatus({ syncing:false, error: e.message, last: status.last });
+        }
+      }
+      useEffect(()=>{
+        const last = loadLS(`om_last_${grow.id}`, null);
+        const stale = !last || (Date.now()-new Date(last).getTime()) > 12*60*60*1000;
+        if (stale) syncNow();
+      },[grow.id]);
+
+      const dayOptions = (sim.days||[]).map((d,i)=>({ label: i===0? "Today" : `Day ${i+1}`, index:i }));
+      const hourlyForDay = useMemo(()=> hourly ? sliceHourlyForDay(hourly, selectedDay) : null, [hourly, selectedDay]);
+
+      return (<div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <button className="btn primary" onClick={syncNow} disabled={status.syncing}>{status.syncing?"Syncing…":"Sync now"}</button>
+          {status.last && <div style={{fontSize:12,opacity:.7}}>Last sync: {fmtDateTime(status.last)}</div>}
+          {status.error && <div style={{color:"#b30000",fontSize:12}}>{status.error}</div>}
+          {sim.days?.length>0 && (
+            <select className="input" style={{width:140}} value={selectedDay} onChange={e=>setSelectedDay(+e.target.value)}>
+              {dayOptions.map(o=><option key={o.index} value={o.index}>{o.label}</option>)}
+            </select>
+          )}
+        </div>
+
+        <div style={{display:"grid", gridTemplateColumns:"300px 1fr", gap:12, marginTop:12}}>
+          <div className="card" style={{padding:12}}>
+            {sim.days?.[selectedDay] ? (<>
+              <div style={{fontWeight:700,marginBottom:6}}>Day {selectedDay+1} summary</div>
+              <Row label="Low / High">{Math.round(sim.days[selectedDay].lowF)}° / {Math.round(sim.days[selectedDay].highF)}°F</Row>
+              <Row label="Avg RH">{sim.days[selectedDay].rh}%</Row>
+              <Row label="Rain chance">{sim.days[selectedDay].rainChance}%</Row>
+              <div style={{fontSize:12,opacity:.7,marginTop:8}}>Use the selector to view the rest of the week.</div>
+            </>) : <div style={{opacity:.7}}>No forecast yet. Click Sync.</div>}
+          </div>
+
+          <div className="card" style={{padding:12}}>
+            {hourlyForDay ? (<div style={{display:"grid", gridTemplateColumns:"1fr", gap:14}}>
+              <div><div style={{fontWeight:700,marginBottom:6}}>Hourly temperature (°F)</div><TempLineChart hours={hourlyForDay.hours} values={hourlyForDay.tempF}/></div>
+              <div><div style={{fontWeight:700,marginBottom:6}}>Hourly rain probability (%)</div><RainBarChart hours={hourlyForDay.hours} values={hourlyForDay.rainProb}/></div>
+            </div>) : <div style={{opacity:.7}}>Charts will appear after syncing weather.</div>}
+          </div>
+        </div>
+
+        <div style={{marginTop:10}}>
+          <details><summary style={{cursor:"pointer"}}>Manual edit (Weather Simulator)</summary>
+            <div style={{marginTop:8}}><WeatherSim sim={sim} setSim={setSim}/></div>
+          </details>
+        </div>
+      </div>);
+    }
+
+    function AlertList({ alerts }) {
+      if (!alerts || alerts.length===0) return <div style={{marginTop:10,opacity:.7}}>No weather‑based alerts. You’re good for now.</div>;
+      const color = s => s==="high" ? "#d33" : s==="medium" ? "#e6a100" : "#2b8a3e";
+      return (<div style={{marginTop:10, display:"flex", flexDirection:"column", gap:8}}>
+        {alerts.map(a=>(
+          <div key={a.id} className="alert" style={{borderLeft:`4px solid ${color(a.severity)}`}}>
+            <div style={{fontWeight:700}}>{a.title}</div>
+            <div style={{fontSize:13,opacity:.85}}>{a.message}</div>
+          </div>
+        ))}
+      </div>);
+    }
+
+    function DataIO({ grows, journal, simWeather, onImport }) {
+      function exportJSON(){
+        const blob = new Blob([JSON.stringify({grows, journal, simWeather}, null, 2)], {type:"application/json"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `grow-assistant-${Date.now()}.json`; a.click();
+        URL.revokeObjectURL(url);
+      }
+      function onFile(e){
+        const f = e.target.files?.[0]; if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => { try { const data = JSON.parse(reader.result); onImport(data);} catch { alert("Invalid file"); } };
+        reader.readAsText(f);
+      }
+      return (<div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn primary" onClick={exportJSON}>Export JSON</button>
+          <label className="btn ghost">Import JSON<input type="file" accept="application/json" onChange={onFile} style={{display:"none"}}/></label>
+        </div>
+        <div style={{fontSize:12,opacity:.7,marginTop:6}}>Export includes grows, journal, and last forecast.</div>
+      </div>);
+    }
+
+    // ---------- Mount ----------
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
